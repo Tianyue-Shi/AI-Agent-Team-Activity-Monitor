@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Application Settings
     debug: bool = False
     
+    # CORS - comma-separated list of allowed origins
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    
     # Database
     database_url: str = "sqlite+aiosqlite:///./team_monitor.db"
     

@@ -42,10 +42,12 @@ app = FastAPI(
 
 
 # Configure CORS
-# In production, restrict this to specific origins
+# Origins are loaded from CORS_ORIGINS environment variable (comma-separated)
+# Default includes local development servers
+cors_origins = [origin.strip() for origin in settings.cors_origins.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
