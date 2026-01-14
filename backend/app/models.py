@@ -41,6 +41,15 @@ class SystemPrompt(Base):
 
 # --- Chat Schemas ---
 
+class SelectedUser(BaseModel):
+    """User selected from the dropdown - provides platform-specific identifiers."""
+    id: str = Field(..., description="Unique user ID (e.g., 'jira_123', 'github_user', 'mock_john')")
+    display_name: str = Field(..., description="User's display name")
+    source: Literal["jira", "github", "mock"] = Field(..., description="Where this user came from")
+    jira_display_name: Optional[str] = Field(None, description="Name to use for JIRA queries")
+    github_username: Optional[str] = Field(None, description="GitHub username for API queries")
+
+
 class ChatRequest(BaseModel):
     """Request body for /chat endpoint."""
     query: str = Field(..., min_length=1, description="User's question")
@@ -51,6 +60,10 @@ class ChatRequest(BaseModel):
     ai_provider: Literal["openai", "claude"] = Field(
         default="openai",
         description="Which AI provider to use"
+    )
+    selected_user: Optional[SelectedUser] = Field(
+        None,
+        description="User selected from dropdown - overrides name extraction from query"
     )
 
 
