@@ -423,7 +423,8 @@ class GitHubClient:
         
         Uses multiple endpoints:
         - /users/{username} - verify user exists
-        - /users/{username}/events - recent activity (commits via PushEvents)
+        - /users/{username}/events - recent activity to find active repos
+        - /repos/{owner}/{repo}/commits - actual commit data (events API doesn't include commits)
         - /search/issues - pull requests
         """
         client = self._get_client()
@@ -444,40 +445,59 @@ class GitHubClient:
         elif user_response.status_code != 200:
             raise Exception(f"GitHub API error: {user_response.status_code}")
         
-        # Step 2: Fetch recent events (includes push events with commits)
+        # Step 2: Fetch recent events to find active repos
         events_response = await client.get(
             f"/users/{username}/events",
-            params={"per_page": 100}  # Get more events to find commits
+            params={"per_page": 100}
         )
         
         commits: list[GitHubCommit] = []
         active_repos: set[str] = set()
+        repos_with_owner: set[str] = set()  # Full "owner/repo" names for commit fetching
         
         if events_response.status_code == 200:
             events = events_response.json()
             
             for event in events:
-                repo_name = event.get("repo", {}).get("name", "").split("/")[-1]
+                repo_full_name = event.get("repo", {}).get("name", "")  # "owner/repo"
+                repo_name = repo_full_name.split("/")[-1] if repo_full_name else ""
                 
-                # Extract commits from PushEvents
-                if event.get("type") == "PushEvent":
-                    payload = event.get("payload", {})
-                    event_commits = payload.get("commits", [])
-                    
-                    for commit in event_commits[:5]:  # Limit commits per push
-                        commits.append(GitHubCommit(
-                            sha=commit.get("sha", "")[:7],
-                            message=commit.get("message", "").split("\n")[0],  # First line
-                            repo=repo_name,
-                            date=datetime.fromisoformat(
-                                event.get("created_at", "").replace("Z", "+00:00")
-                            ),
-                        ))
-                        active_repos.add(repo_name)
-                
-                # Track repos from other events
-                elif event.get("type") in ["PullRequestEvent", "IssuesEvent", "CreateEvent"]:
+                if repo_full_name:
+                    repos_with_owner.add(repo_full_name)
                     active_repos.add(repo_name)
+        
+        # Step 3: Fetch actual commits from each active repo
+        # The Events API often doesn't include commit details, so we fetch directly
+        for repo_full_name in list(repos_with_owner)[:5]:  # Limit to 5 repos to avoid rate limits
+            try:
+                commits_response = await client.get(
+                    f"/repos/{repo_full_name}/commits",
+                    params={
+                        "author": username,
+                        "per_page": 10,  # Last 10 commits per repo
+                    }
+                )
+                
+                if commits_response.status_code == 200:
+                    repo_commits = commits_response.json()
+                    repo_name = repo_full_name.split("/")[-1]
+                    
+                    for commit_data in repo_commits:
+                        commit_info = commit_data.get("commit", {})
+                        commit_date = commit_info.get("author", {}).get("date", "")
+                        
+                        if commit_date:
+                            commits.append(GitHubCommit(
+                                sha=commit_data.get("sha", "")[:7],
+                                message=commit_info.get("message", "").split("\n")[0],
+                                repo=repo_name,
+                                date=datetime.fromisoformat(commit_date.replace("Z", "+00:00")),
+                            ))
+            except Exception as e:
+                print(f"Error fetching commits from {repo_full_name}: {e}")
+        
+        # Sort commits by date (most recent first)
+        commits.sort(key=lambda c: c.date, reverse=True)
         
         # Step 3: Fetch pull requests via search API
         prs_response = await client.get(
