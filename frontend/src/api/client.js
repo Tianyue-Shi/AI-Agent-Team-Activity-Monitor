@@ -2,10 +2,11 @@
  * API Client for Team Activity Monitor Backend
  * 
  * Centralizes all API calls to the FastAPI backend.
- * Base URL is configured for local development.
+ * Base URL is configured via VITE_API_URL environment variable,
+ * falling back to localhost for development.
  */
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 /**
  * Generic fetch wrapper with error handling
