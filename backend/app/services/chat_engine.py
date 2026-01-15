@@ -406,10 +406,19 @@ async def generate_agent_response(
     if selected_user:
         debug_info["user_source"] = "dropdown"
         debug_info["selected_user_id"] = selected_user.id
+        
+        # Get the platform-specific usernames
+        jira_name = selected_user.jira_display_name or selected_user.display_name
+        github_name = selected_user.github_username or selected_user.display_name
+        
         # Add user context to the query so AI knows which user to query
-        enhanced_query = f"""[Context: User selected '{selected_user.display_name}' from the dropdown. 
-For JIRA queries, use: '{selected_user.jira_display_name or selected_user.display_name}'
-For GitHub queries, use: '{selected_user.github_username or selected_user.display_name}']
+        # Format is explicit and emphatic to ensure AI uses these values
+        enhanced_query = f"""[Context: SELECTED USER from dropdown]
+Selected User: {selected_user.display_name}
+- For get_jira_issues tool, use username: "{jira_name}"
+- For get_github_activity tool, use username: "{github_name}"
+IMPORTANT: Use these EXACT usernames above for ANY query about this person's activity, commits, issues, work, etc.
+[End Context]
 
 User question: {query}"""
         
@@ -434,11 +443,20 @@ You have access to tools to fetch team member activity:
 - get_jira_issues: Get JIRA tickets assigned to someone
 - get_github_activity: Get recent GitHub commits and PRs
 
-IMPORTANT:
-- Only use tools when the user is asking about team member activity
-- For greetings or general questions, respond directly without using tools
-- When you do use tools, always specify the username parameter
-- If a user is selected from dropdown (shown in [Context]), use the provided usernames
+IMPORTANT RULES:
+1. Only use tools when the user is asking about team member activity
+2. For greetings or general questions, respond directly without using tools
+3. When you do use tools, always specify the username parameter
+
+CRITICAL - SELECTED USER CONTEXT:
+- When a [Context] block appears at the start of the message, a user has been SELECTED from the dropdown
+- ALWAYS use the usernames from [Context] for ANY activity-related query, even if:
+  - The user mentions a different name (still use the selected user's usernames)
+  - The user says "he", "she", "they", "them", "their" - these refer to the SELECTED user
+  - The user says "this person", "the user", or similar - these refer to the SELECTED user
+  - The user asks about "commits", "activity", "work", "issues", "PRs" without naming anyone - use the SELECTED user
+- The [Context] block contains the EXACT usernames to use for JIRA and GitHub queries
+- Example: If [Context] says 'For GitHub queries, use: justin123', then call get_github_activity with username='justin123'
 
 Available team members: Select from the dropdown for real users, or type names like john, sarah, mike, lisa (demo users)"""
 
@@ -461,8 +479,9 @@ Available team members: Select from the dropdown for real users, or type names l
     
     # Step 2b: Execute tool calls
     # Include tool_calls in the assistant message (required by OpenAI API)
+    # IMPORTANT: Use enhanced_query (not query) to preserve the selected user context
     messages = [
-        Message(role="user", content=query),
+        Message(role="user", content=enhanced_query),
         Message(
             role="assistant", 
             content=initial_response.content or "",
