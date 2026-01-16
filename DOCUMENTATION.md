@@ -20,10 +20,10 @@
 **Team Activity Monitor** is an AI-powered chatbot that integrates with JIRA and GitHub APIs to answer questions about team member activities. The core question it answers is: *"What is [member] working on these days?"*
 
 ### Key Features
-- **Dual-Mode Architecture**: Procedural (deterministic) vs Agentic (AI-decides) modes
+- **2-AI-Call Pipeline**: Router Agent (with tool calling) + Response Agent (formatting)
 - **Multi-Provider AI Support**: OpenAI GPT and Anthropic Claude
 - **Real API Integration**: JIRA Cloud and GitHub REST APIs
-- **Prompt Version Control**: Append-only system prompts with rollback capability
+- **Conversation History**: SQLite-backed chat sessions with follow-up support
 - **Mock Data Fallback**: Demo users for testing without real API keys
 - **User Selection Dropdown**: Unified list of real and mock team members
 
@@ -31,7 +31,15 @@
 
 ## Architecture
 
-![Team Activity Monitor Architecture](./Team%20Activity%20Monitor%20Architecture.drawio.png)
+![Team Activity Monitor Architecture](./Team%20Activity%20Monitor%20Architecture-Page-2.jpg)
+
+### Pipeline Flow
+
+1. **Username Extraction** (regex, instant): Extract team member name from query
+2. **AI Call 1 - Router Agent**: Uses function calling to decide which tools to invoke (JIRA, GitHub, both, or none for greetings)
+3. **AI Call 2 - Response Agent**: Formats the fetched data into detailed, well-structured markdown
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed trade-offs and micro-agent pattern discussion.
 
 ---
 
@@ -47,8 +55,9 @@
 | **aiosqlite** | 0.22+ | Async SQLite driver |
 | **Pydantic** | 2.5+ | Data validation & settings |
 | **httpx** | 0.26+ | Async HTTP client for external APIs |
-| **openai** | 1.12+ | OpenAI SDK |
-| **anthropic** | 0.18+ | Anthropic Claude SDK |
+| **openai** | 1.12+ | OpenAI SDK (with function calling) |
+| **anthropic** | 0.18+ | Anthropic Claude SDK (with tool use) |
+| **PyYAML** | 6.0+ | YAML prompt loading |
 
 ### Frontend
 | Technology | Version | Purpose |
@@ -57,7 +66,7 @@
 | **Vite** | 7.2+ | Build tool & dev server |
 | **Tailwind CSS** | 4.1+ | Utility-first CSS |
 | **Lucide React** | 0.562+ | Icon library |
-| **React Router** | 7.12+ | Client-side routing |
+| **React Markdown** | 9.0+ | Markdown rendering |
 
 ### External APIs
 | Service | API Version | Authentication |
@@ -74,9 +83,9 @@
 ### Prerequisites
 - Python 3.13+
 - Node.js 18+
+- OpenAI API key (required)
 - JIRA Cloud account (optional)
 - GitHub account (optional)
-- OpenAI API key
 - Anthropic API key (optional)
 
 ### Backend Setup
@@ -94,16 +103,16 @@ pip install -r requirements.txt
 
 # 4. Create .env file
 cat > .env << EOF
-# AI Providers
+# AI Providers (at least OpenAI required)
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 
-# JIRA Configuration (optional)
+# JIRA Configuration (optional - mock data available)
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=your-api-token
 
-# GitHub Configuration (optional)
+# GitHub Configuration (optional - mock data available)
 GITHUB_TOKEN=ghp_...
 
 # Debug mode
@@ -143,81 +152,95 @@ npm run dev
 backend/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py           # FastAPI app, lifespan, CORS, debug endpoints
-│   ├── config.py         # Pydantic Settings (env vars)
-│   ├── database.py       # SQLAlchemy async engine, session factory
-│   ├── models.py         # ORM models + Pydantic schemas
-│   ├── seed.py           # Default prompt seeding
+│   ├── main.py              # FastAPI app, lifespan, CORS, debug endpoints
+│   ├── config.py            # Pydantic Settings (env vars)
+│   ├── database.py          # SQLAlchemy async engine, session factory
+│   ├── models.py            # ORM models + Pydantic schemas
+│   ├── prompts.yaml         # System prompts for agents (YAML)
 │   ├── routers/
 │   │   ├── __init__.py
-│   │   ├── chat.py       # /chat endpoints
-│   │   └── prompts.py    # /prompts endpoints
+│   │   ├── chat.py          # /chat endpoints (2-AI-call pipeline)
+│   │   └── prompts.py       # /prompts endpoints (legacy)
 │   └── services/
 │       ├── __init__.py
-│       ├── ai_providers.py   # OpenAI/Claude abstraction
-│       ├── chat_engine.py    # Dual-mode logic
-│       ├── github_client.py  # GitHub API client
-│       └── jira_client.py    # JIRA API client
+│       ├── ai_providers.py      # OpenAI/Claude abstraction with tool support
+│       ├── micro_agents.py      # Router Agent + Response Agent + tool functions
+│       ├── intent_classifier.py # Username extraction (regex only)
+│       ├── prompt_loader.py     # YAML prompt loading with caching
+│       ├── github_client.py     # GitHub API client
+│       └── jira_client.py       # JIRA API client
 ├── requirements.txt
-├── team_monitor.db       # SQLite database (auto-created)
-└── .env                  # Environment variables
+├── team_monitor.db          # SQLite database (auto-created)
+└── .env                     # Environment variables
 ```
 
 ### Key Components
 
-#### 1. Configuration (`config.py`)
+#### 1. Micro Agents (`micro_agents.py`)
+
+The core AI pipeline with two agents and tool functions:
+
 ```python
-class Settings(BaseSettings):
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    jira_base_url: str = ""
-    jira_email: str = ""
-    jira_api_token: str = ""
-    github_token: str = ""
-    debug: bool = False
-    database_url: str = "sqlite+aiosqlite:///./team_monitor.db"
-    
-    model_config = SettingsConfigDict(env_file=".env")
+# Tool definitions for Router Agent
+ROUTER_TOOLS = [
+    ToolDefinition(
+        name="jira_agent",
+        description="Fetch JIRA tickets for a user",
+        parameters={"username": "string"}
+    ),
+    ToolDefinition(
+        name="github_agent", 
+        description="Fetch GitHub activity for a user",
+        parameters={"username": "string"}
+    ),
+]
 
-@lru_cache()  # Singleton pattern
-def get_settings() -> Settings:
-    return Settings()
+# AI Call 1: Router Agent
+async def router_agent(query, username, ai_provider) -> RouterResult:
+    """Decides which tools to call based on query intent."""
+    response = await ai.generate_with_tools(
+        messages=[{"role": "user", "content": query}],
+        tools=ROUTER_TOOLS,
+        system_prompt=get_router_agent_prompt()
+    )
+    # Execute tool calls and return data
+    return RouterResult(route=route, jira_data=..., github_data=...)
+
+# AI Call 2: Response Agent  
+async def response_agent(query, data, ai_provider) -> str:
+    """Formats fetched data into detailed markdown response."""
+    context = _format_jira_context(data.jira_data) + _format_github_context(data.github_data)
+    return await ai.generate(
+        messages=[{"role": "user", "content": f"{context}\n\nQuery: {query}"}],
+        system_prompt=get_response_agent_prompt()
+    )
 ```
 
-#### 2. Database (`database.py`)
-- **Async SQLAlchemy 2.0** with `aiosqlite` driver
-- **Session management** via FastAPI `Depends(get_db)`
-- **Auto-commit/rollback** in context manager
+#### 2. Intent Classifier (`intent_classifier.py`)
 
-#### 3. Models (`models.py`)
-- **SQLAlchemy ORM**: `SystemPrompt` table
-- **Pydantic Schemas**: Request/Response validation
-  - `ChatRequest`, `ChatResponse`
-  - `PromptCreate`, `PromptResponse`, `PromptHistoryResponse`
-  - `SelectedUser` (for dropdown selection)
+Lightweight regex-based username extraction:
 
-#### 4. Chat Engine (`chat_engine.py`)
-The **core business logic** implementing dual-mode architecture:
+```python
+USERNAME_PATTERNS = [
+    r"(?:what(?:'s| is| has)?|show|tell|get|find|check)\s+(\w+)(?:'s)?",
+    r"(?:working on|doing|up to|status)\s+(?:for\s+)?(\w+)",
+    r"(\w+)(?:'s)?\s+(?:tickets?|issues?|prs?|commits?|activity)",
+]
 
-**Procedural Mode:**
+KNOWN_USERNAMES = {"john", "sarah", "mike", "lisa", "justin"}
+
+def extract_username(query: str) -> Optional[str]:
+    """Extract username from query using regex patterns."""
+    for pattern in USERNAME_PATTERNS:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match and match.group(1).lower() in KNOWN_USERNAMES:
+            return match.group(1).lower()
+    return None
 ```
-User Query → Extract Username → Fetch JIRA → Fetch GitHub → AI Summary
-```
-- Always fetches both data sources
-- Deterministic, reliable
-- Higher latency and API costs
 
-**Agentic Mode:**
-```
-User Query → AI (with tools) → [Tool Calls?] → Execute Tools → AI Response
-```
-- AI decides whether to fetch data
-- Uses OpenAI/Claude function calling
-- Lower cost for simple queries
-- Non-deterministic
+#### 3. AI Providers (`ai_providers.py`)
 
-#### 5. AI Providers (`ai_providers.py`)
-**Strategy Pattern** implementation:
+**Strategy Pattern** with tool/function calling support:
 
 ```python
 class AIProvider(ABC):
@@ -227,24 +250,65 @@ class AIProvider(ABC):
     @abstractmethod
     async def generate_with_tools(messages, tools, system_prompt) -> AIResponse
 
-class OpenAIProvider(AIProvider): ...
-class ClaudeProvider(AIProvider): ...
+class OpenAIProvider(AIProvider):
+    async def generate_with_tools(self, messages, tools, system_prompt):
+        # Convert tools to OpenAI function format
+        functions = [tool.to_openai_function() for tool in tools]
+        response = await self.client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            functions=functions,
+            function_call="auto"
+        )
+        return AIResponse(content=..., tool_calls=...)
 
-def get_ai_provider(name: str) -> AIProvider:  # Factory
+class ClaudeProvider(AIProvider):
+    async def generate_with_tools(self, messages, tools, system_prompt):
+        # Convert tools to Claude tool format
+        claude_tools = [tool.to_claude_tool() for tool in tools]
+        response = await self.client.messages.create(
+            model="claude-sonnet-4-20250514",
+            messages=messages,
+            tools=claude_tools
+        )
+        return AIResponse(content=..., tool_calls=...)
 ```
 
-#### 6. API Clients (`jira_client.py`, `github_client.py`)
-**Repository Pattern** with fallback:
+#### 4. API Clients (`jira_client.py`, `github_client.py`)
+
+**Repository Pattern** with automatic mock fallback for known mock users:
 
 ```python
 class JiraClient:
-    _use_mock: bool  # True if no credentials
-    
-    async def get_user_issues(username) -> JiraUserActivity:
-        if self._use_mock:
-            return await self._get_mock_issues(username)
-        else:
+    async def get_user_issues(self, username: str) -> JiraUserActivity:
+        # Force mock for known mock users
+        if username.lower() in MOCK_JIRA_DATA:
+            return self._get_mock_issues(username)
+        
+        # Use real API if configured
+        if not self._use_mock:
             return await self._get_real_issues(username)
+        
+        return self._get_mock_issues(username)
+```
+
+#### 5. Prompt Loader (`prompt_loader.py`)
+
+YAML-based prompts with caching:
+
+```python
+@lru_cache(maxsize=1)
+def _load_prompts() -> dict:
+    """Load prompts from YAML file (cached)."""
+    yaml_path = Path(__file__).parent.parent / "prompts.yaml"
+    with open(yaml_path) as f:
+        return yaml.safe_load(f)
+
+def get_router_agent_prompt() -> str:
+    return _load_prompts()["router_agent"]
+
+def get_response_agent_prompt() -> str:
+    return _load_prompts()["response_agent"]
 ```
 
 ---
@@ -257,14 +321,14 @@ class JiraClient:
 frontend/
 ├── src/
 │   ├── main.jsx          # React entry point
-│   ├── App.jsx           # Root component
+│   ├── App.jsx           # Root component with routing
 │   ├── index.css         # Tailwind imports
 │   ├── api/
 │   │   └── client.js     # API client (fetch wrapper)
 │   └── components/
-│       ├── ChatInterface.jsx   # Main chat UI
-│       ├── MessageBubble.jsx   # Message display
-│       └── AdminPanel.jsx      # Prompt management
+│       ├── ChatInterface.jsx   # Main chat UI with history
+│       ├── MessageBubble.jsx   # Message display with markdown
+│       └── AdminPanel.jsx      # Legacy prompt management
 ├── index.html
 ├── package.json
 ├── vite.config.js
@@ -275,11 +339,17 @@ frontend/
 ### Key Components
 
 #### ChatInterface.jsx
-- **State Management**: `useState` for messages, mode, provider, team members
+- **State Management**: `useState` for messages, conversations, provider, team members
+- **Conversation History**: Sidebar with past conversations, auto-load on selection
 - **User Selection**: Dropdown with real JIRA/GitHub users + mock users
-- **Mode Toggle**: Procedural vs Agent
 - **Provider Toggle**: OpenAI vs Claude
 - **Auto-scroll**: `useRef` + `scrollIntoView`
+- **Markdown Support**: Full markdown rendering via `react-markdown`
+
+#### MessageBubble.jsx
+- **Markdown Rendering**: Tables, code blocks, lists, bold/italic
+- **Metadata Display**: Source badges (JIRA, GitHub), AI provider
+- **Copy Button**: Copy response to clipboard
 
 #### API Client (`client.js`)
 ```javascript
@@ -292,10 +362,15 @@ async function fetchAPI(endpoint, options = {}) {
   return response.json();
 }
 
-export async function sendChatMessage(query, mode, aiProvider, selectedUser) {
+export async function sendChatMessage(query, aiProvider, selectedUser, conversationId) {
   return fetchAPI('/chat', {
     method: 'POST',
-    body: JSON.stringify({ query, mode, ai_provider: aiProvider, selected_user: selectedUser }),
+    body: JSON.stringify({ 
+      query, 
+      ai_provider: aiProvider, 
+      selected_user: selectedUser,
+      conversation_id: conversationId 
+    }),
   });
 }
 ```
@@ -307,21 +382,21 @@ export async function sendChatMessage(query, mode, aiProvider, selectedUser) {
 ### Chat Endpoints
 
 #### `POST /chat`
-Main chat endpoint - answers team activity questions.
+Main chat endpoint - answers team activity questions using 2-AI-call pipeline.
 
 **Request:**
 ```json
 {
   "query": "What is John working on?",
-  "mode": "procedural",        // or "agent"
-  "ai_provider": "openai",     // or "claude"
-  "selected_user": {           // optional
+  "ai_provider": "openai",
+  "selected_user": {
     "id": "mock_john",
     "display_name": "John",
     "source": "mock",
     "jira_display_name": "John",
     "github_username": "john"
-  }
+  },
+  "conversation_id": "uuid-string"
 }
 ```
 
@@ -329,14 +404,41 @@ Main chat endpoint - answers team activity questions.
 ```json
 {
   "response": "John is working on...",
-  "mode": "procedural",
   "ai_provider": "openai",
-  "sources_consulted": ["jira", "github"]
+  "sources_consulted": ["jira", "github"],
+  "conversation_id": "uuid-string",
+  "metadata": {
+    "route": "both",
+    "username": "john"
+  }
 }
 ```
 
-#### `GET /chat/modes`
-Returns available chat modes.
+#### `GET /chat/conversations`
+Returns list of past conversations.
+
+**Response:**
+```json
+{
+  "conversations": [
+    {
+      "id": "uuid",
+      "title": "John's activity",
+      "created_at": "2025-01-15T10:00:00Z",
+      "message_count": 5
+    }
+  ]
+}
+```
+
+#### `GET /chat/conversations/{id}`
+Returns a specific conversation with messages.
+
+#### `POST /chat/conversations/new`
+Creates a new conversation.
+
+#### `DELETE /chat/conversations/{id}`
+Deletes a conversation.
 
 #### `GET /chat/providers`
 Returns available AI providers with configuration status.
@@ -344,27 +446,11 @@ Returns available AI providers with configuration status.
 #### `GET /chat/team`
 Returns unified list of real + mock team members.
 
-### Prompt Endpoints
-
-#### `GET /prompts/current`
-Get the active system prompt.
-
-#### `POST /prompts/update`
-Create a new prompt version (append-only).
-
-#### `GET /prompts/history`
-Get all prompt versions for audit trail.
-
-#### `POST /prompts/rollback/{version}`
-Create new version with old prompt text.
-
-#### `GET /prompts/{version}`
-Get a specific prompt version.
-
 ### Debug Endpoints
 
 | Endpoint | Purpose |
 |----------|---------|
+| `GET /debug/chat?query=...` | Test chat pipeline directly |
 | `GET /debug/activity/{username}` | Test JIRA + GitHub fetch |
 | `GET /debug/jira/status` | JIRA connection status |
 | `GET /debug/github/status` | GitHub connection status |
@@ -374,66 +460,84 @@ Get a specific prompt version.
 
 ## Data Flow
 
-### Chat Request Flow (Procedural Mode)
+### Chat Request Flow (2-AI-Call Pipeline)
 
 ```
 1. Frontend sends POST /chat
    │
 2. FastAPI validates request (Pydantic)
    │
-3. Chat Router fetches active SystemPrompt from DB
+3. Get or create conversation (SQLite)
    │
-4. Chat Engine determines user:
-   │  └─ selected_user from dropdown? → Use platform-specific identifiers
-   │  └─ No selection? → Extract username from query (regex)
+4. Save user message to database
    │
-5. Determine data source:
-   │  └─ Mock user? → Force _use_mock = True
-   │  └─ Real user? → Use real APIs
+5. Extract username:
+   │  ├─ selected_user provided? → Use platform-specific identifiers
+   │  └─ No selection? → Extract from query via regex
    │
-6. Fetch data (parallel):
-   │  ├─ JIRA Client → get_user_issues(username)
-   │  └─ GitHub Client → get_user_activity(username)
+6. AI CALL 1 - Router Agent:
+   │  ├─ Receives query + username context
+   │  ├─ Decides: call jira_agent? github_agent? both? neither?
+   │  ├─ Executes tool functions if needed
+   │  └─ Returns: RouterResult { route, jira_data, github_data }
    │
-7. Format data into context string
+7. AI CALL 2 - Response Agent:
+   │  ├─ Receives query + fetched data context
+   │  ├─ Formats data into detailed markdown
+   │  └─ Returns: formatted response string
    │
-8. AI Provider generates summary:
-   │  └─ System prompt + Context + Query → AI → Response
+8. Save assistant message to database
    │
 9. Return ChatResponse to frontend
 ```
 
-### Prompt Update Flow
+### Conversation History Flow
 
 ```
-1. Admin submits new prompt text
+1. User clicks conversation in History panel
    │
-2. POST /prompts/update
+2. Frontend calls GET /chat/conversations/{id}
    │
-3. Get max version number
+3. Backend fetches conversation + messages from SQLite
    │
-4. Deactivate all existing prompts (is_active = False)
+4. Frontend displays last N messages in chat area
    │
-5. Create new row: version = max + 1, is_active = True
-   │
-6. Never delete or modify old rows (audit trail)
+5. User sends new message → attached to same conversation_id
 ```
 
 ---
 
 ## Design Patterns & Tradeoffs
 
-### 1. Dual-Mode Architecture
+### Architecture Trade-offs
 
-| Aspect | Procedural | Agentic |
-|--------|------------|---------|
-| **Data Fetching** | Always fetch both | AI decides |
-| **Reliability** | High (deterministic) | Medium (AI-dependent) |
-| **Latency** | Higher (always 2 API calls) | Lower (may skip) |
-| **Cost** | Higher (always uses tokens) | Lower (smarter) |
-| **Use Case** | Critical dashboards | Casual chat |
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Full micro-agents (4+)** | Better separation of concerns, lower cost per call, highly specialized | More development time, complex orchestration |
+| **2-Agent (current)** | Faster to build, easier to debug, demonstrates core concepts | Larger prompts, less specialized |
 
-**Tradeoff**: Reliability vs Efficiency
+**Why 2 Agents?**
+1. **Demonstrates core concepts**: Tool calling, agent orchestration, data aggregation
+2. **Practical for scope**: Balances sophistication with implementation time
+3. **Extensible**: Can be expanded by splitting Router Agent into Intent + Orchestrator
+
+### 1. Tool Calling Pattern
+
+```python
+# Router Agent uses AI function calling
+ROUTER_TOOLS = [
+    ToolDefinition(name="jira_agent", ...),
+    ToolDefinition(name="github_agent", ...),
+]
+
+# AI decides which tools to call based on query
+response = await ai.generate_with_tools(messages, tools=ROUTER_TOOLS)
+for tool_call in response.tool_calls:
+    result = await execute_tool(tool_call)
+```
+
+**Benefit**: AI intelligently routes queries to appropriate data sources
+**Tradeoff**: Requires AI provider with function calling support
 
 ### 2. Strategy Pattern (AI Providers)
 
@@ -443,31 +547,37 @@ class AIProvider(ABC):
     async def generate(...) -> AIResponse
     @abstractmethod
     async def generate_with_tools(...) -> AIResponse
+
+# Factory creates appropriate provider
+def get_ai_provider(name: str) -> AIProvider:
+    if name == "openai": return OpenAIProvider(...)
+    if name == "claude": return ClaudeProvider(...)
 ```
 
 **Benefit**: Easy to add new providers (Gemini, Llama, etc.)
-**Tradeoff**: Slight abstraction overhead
 
 ### 3. Repository Pattern (API Clients)
 
 ```python
 class JiraClient:
     async def get_user_issues(username) -> JiraUserActivity
-    # Implementation hidden (mock vs real)
 ```
 
 **Benefit**: Swap between mock/real without changing business logic
-**Tradeoff**: Additional layer of indirection
 
-### 4. Append-Only Pattern (Prompts)
+### 4. YAML Configuration (Prompts)
 
-**Why not UPDATE?**
-- Full audit trail
-- Easy rollback
-- No data loss
-- "Blame" capability
+```yaml
+# prompts.yaml
+router_agent: |
+  You are a routing agent...
+  
+response_agent: |
+  You are a response formatting agent...
+```
 
-**Tradeoff**: Database grows over time (mitigated by small text data)
+**Benefit**: Easy to edit prompts without code changes, loaded once at startup
+**Tradeoff**: Requires server restart for prompt changes
 
 ### 5. Singleton Pattern (Settings)
 
@@ -478,32 +588,40 @@ def get_settings() -> Settings:
 ```
 
 **Benefit**: Single configuration instance, env vars loaded once
-**Tradeoff**: Settings are immutable during runtime (restart required)
-
-### 6. Factory Pattern (AI Provider Creation)
-
-```python
-def get_ai_provider(name: str) -> AIProvider:
-    if name == "openai": return OpenAIProvider(...)
-    if name == "claude": return ClaudeProvider(...)
-```
-
-**Benefit**: Decoupled creation, easy to extend
-**Tradeoff**: Extra function call
+**Tradeoff**: Settings are immutable during runtime
 
 ---
 
 ## Performance Optimizations
 
-### 1. Async Everything
+### 1. 2-Call Pipeline
+- Previous approaches required 3-4 AI calls
+- Current: exactly 2 AI calls for data queries, 1 for greetings
+- **Impact**: ~50% reduction in response time
+
+### 2. Regex-Based Username Extraction
+- No AI call needed for username extraction
+- Pattern matching is instant (<1ms)
+- **Impact**: Saves one AI call latency
+
+### 3. Async Everything
 - **FastAPI** async endpoints
 - **aiosqlite** async database
 - **httpx** async HTTP client
 - **openai/anthropic** async SDK
+- **Impact**: Non-blocking I/O, better concurrency
 
-**Impact**: Non-blocking I/O, better concurrency
+### 4. Cached Prompt Loading
 
-### 2. Lazy Client Initialization
+```python
+@lru_cache(maxsize=1)
+def _load_prompts() -> dict:
+    """Load prompts once from YAML file."""
+```
+
+**Impact**: No file I/O on each request
+
+### 5. Lazy Client Initialization
 
 ```python
 def _get_client(self):
@@ -514,40 +632,15 @@ def _get_client(self):
 
 **Impact**: Resources created only when needed
 
-### 3. Cached Settings
+### 6. Parallel Tool Execution (Potential)
 
-```python
-@lru_cache()
-def get_settings() -> Settings:
-```
-
-**Impact**: Environment variables parsed once
-
-### 4. Database Session Pooling
-
-```python
-AsyncSessionLocal = async_sessionmaker(
-    engine,
-    expire_on_commit=False,  # Keep objects usable
-)
-```
-
-**Impact**: Efficient connection reuse
-
-### 5. Parallel Data Fetching (Potential)
-
-Currently sequential, but easily parallelizable:
+When Router Agent requests both tools:
 ```python
 jira_data, github_data = await asyncio.gather(
-    jira_client.get_user_issues(username),
-    github_client.get_user_activity(username),
+    jira_agent(username),
+    github_agent(username),
 )
 ```
-
-### 6. Frontend Optimizations
-- **Vite** hot module replacement
-- **React 19** concurrent features
-- **Tailwind CSS** purging (smaller bundle)
 
 ---
 
@@ -561,7 +654,7 @@ jira_data, github_data = await asyncio.gather(
 ```python
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Specific origins
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
 )
 ```
@@ -569,7 +662,6 @@ app.add_middleware(
 ### 3. Input Validation
 - **Pydantic** models validate all requests
 - `Field(min_length=1)` prevents empty queries
-- `Literal["procedural", "agent"]` restricts mode values
 
 ### 4. API Token Security
 - JIRA: Basic Auth (email:token base64)
@@ -580,49 +672,23 @@ app.add_middleware(
 - **SQLAlchemy ORM** parameterized queries
 - No raw SQL strings
 
-### 6. Rate Limiting (Not Implemented)
-- Potential improvement: Add rate limiting middleware
-- Consider: `slowapi` or custom solution
-
 ---
 
 ## Good to Know
 
-### Mock vs Real User Detection
-
-```python
-MOCK_USERS = {"john", "sarah", "mike", "lisa"}
-REAL_USER_ALIASES = {"justin", "justin shi", "shi", "tianyue-shi"}
-
-# Mock users → Force mock data
-# Real users → Use real APIs
-```
-
 ### Username Resolution
 
+Different platforms use different identifiers:
 ```python
-USERNAME_ALIASES = {
-    "justin": {
-        "jira": "Justin Shi",      # JIRA display name
-        "github": "Tianyue-Shi",   # GitHub username
-    }
-}
+def get_platform_username(username: str, platform: str) -> str:
+    """Resolve username for specific platform."""
+    if username.lower() in USERNAME_ALIASES:
+        return USERNAME_ALIASES[username.lower()].get(platform, username)
+    return username
 ```
-
-Different platforms use different identifiers!
-
-### GitHub Events API Limitation
-
-The GitHub Events API doesn't always include commit details in `PushEvent` payloads. Solution: Fetch commits directly from `/repos/{owner}/{repo}/commits?author={username}`.
 
 ### Database Location
 
 SQLite database: `backend/team_monitor.db`
 - Auto-created on first run
-- Contains `system_prompts` table
-
-### Hot Reload
-
-- **Backend**: `uvicorn --reload` watches for file changes
-- **Frontend**: Vite HMR for instant updates
-- **Note**: `.env` changes require server restart (cached settings)
+- Contains: `conversations`, `messages` tables

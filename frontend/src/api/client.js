@@ -37,16 +37,20 @@ async function fetchAPI(endpoint, options = {}) {
 /**
  * Send a chat message
  * @param {string} query - User's question
- * @param {string} mode - "procedural" or "agent"
  * @param {string} aiProvider - "openai" or "claude"
  * @param {object|null} selectedUser - User selected from dropdown (optional)
+ * @param {string|null} conversationId - Conversation ID for follow-ups (optional)
  */
-export async function sendChatMessage(query, mode = 'procedural', aiProvider = 'openai', selectedUser = null) {
+export async function sendChatMessage(query, aiProvider = 'openai', selectedUser = null, conversationId = null) {
   const payload = { 
     query, 
-    mode, 
     ai_provider: aiProvider,
   };
+  
+  // Add conversation ID if provided
+  if (conversationId) {
+    payload.conversation_id = conversationId;
+  }
   
   // Add selected user if provided (with platform-specific identifiers)
   if (selectedUser) {
@@ -66,13 +70,6 @@ export async function sendChatMessage(query, mode = 'procedural', aiProvider = '
 }
 
 /**
- * Get available chat modes
- */
-export async function getChatModes() {
-  return fetchAPI('/chat/modes');
-}
-
-/**
  * Get available AI providers
  */
 export async function getChatProviders() {
@@ -84,6 +81,45 @@ export async function getChatProviders() {
  */
 export async function getTeamMembers() {
   return fetchAPI('/chat/team');
+}
+
+// =============================================================================
+// Conversation API
+// =============================================================================
+
+/**
+ * List all conversations
+ * @param {number} limit - Maximum number of conversations to return
+ */
+export async function listConversations(limit = 20) {
+  return fetchAPI(`/chat/conversations?limit=${limit}`);
+}
+
+/**
+ * Get a specific conversation with messages
+ * @param {string} conversationId - Conversation ID
+ */
+export async function getConversation(conversationId) {
+  return fetchAPI(`/chat/conversations/${conversationId}`);
+}
+
+/**
+ * Delete a conversation
+ * @param {string} conversationId - Conversation ID
+ */
+export async function deleteConversation(conversationId) {
+  return fetchAPI(`/chat/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Create a new conversation
+ */
+export async function createNewConversation() {
+  return fetchAPI('/chat/conversations/new', {
+    method: 'POST',
+  });
 }
 
 // =============================================================================

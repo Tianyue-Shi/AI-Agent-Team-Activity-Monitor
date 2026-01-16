@@ -1,20 +1,85 @@
-"""
-Chat Router - Main chat endpoint for the Team Activity Monitor.
-"""
+import json
+import uuid
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import SystemPrompt, ChatRequest, ChatResponse
-from app.services import generate_response
+from app.models import (
+    Conversation,
+    ConversationMessage,
+    ChatRequest,
+    ChatResponse,
+    ConversationResponse,
+    ConversationWithMessagesResponse,
+    ConversationListResponse,
+    MessageResponse,
+)
+from app.services.ai_providers import Message
+from app.services.intent_classifier import extract_username
+from app.services.micro_agents import router_agent, response_agent
 
 router = APIRouter()
 
 
 # =============================================================================
-# POST /chat - Main chat endpoint
+# Helper Functions
+# =============================================================================
+
+async def get_or_create_conversation(
+    db: AsyncSession,
+    conversation_id: Optional[str] = None,
+) -> Conversation:
+    """Get existing conversation or create a new one."""
+    if conversation_id:
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        conversation = result.scalar_one_or_none()
+        if conversation:
+            return conversation
+    
+    # Create new conversation
+    new_conversation = Conversation(
+        id=str(uuid.uuid4()),
+    )
+    db.add(new_conversation)
+    await db.flush()
+    return new_conversation
+
+
+async def save_message(
+    db: AsyncSession,
+    conversation_id: str,
+    role: str,
+    content: str,
+    metadata: Optional[dict] = None,
+) -> ConversationMessage:
+    """Save a message to the conversation."""
+    message = ConversationMessage(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        metadata_json=json.dumps(metadata) if metadata else None,
+    )
+    db.add(message)
+    await db.flush()
+    return message
+
+
+def generate_conversation_title(query: str) -> str:
+    """Generate a title from the first message."""
+    title = query[:50].strip()
+    if len(query) > 50:
+        title += "..."
+    return title
+
+
+# =============================================================================
+# POST /chat - Main chat endpoint (2-AI-call pipeline)
 # =============================================================================
 
 @router.post("", response_model=ChatResponse)
@@ -25,74 +90,86 @@ async def chat(
     """
     Main chat endpoint - answers questions about team activity.
     
+    Uses a streamlined 2-AI-call pipeline:
+    1. Extract username via regex (instant, no LLM)
+    2. Router Agent (AI Call 1): Decides which tools to call, fetches data
+    3. Response Agent (AI Call 2): Formats the final response
+    
     Request body:
     {
         "query": "What is John working on?",
-        "mode": "procedural" | "agent",
-        "ai_provider": "openai" | "claude"
+        "ai_provider": "openai" | "claude",
+        "selected_user": {...} (optional),
+        "conversation_id": "uuid" (optional, for follow-ups)
     }
-    
-    Mode differences:
-    - procedural: ALWAYS fetches from JIRA and GitHub, then summarizes
-    - agent: AI DECIDES whether to fetch using function calling
-    
-    The active system prompt is fetched from the database, allowing
-    runtime configuration without code changes.
     """
-    # Get the active system prompt from database
-    result = await db.execute(
-        select(SystemPrompt).where(SystemPrompt.is_active == True)
+    # Step 1: Get or create conversation
+    conversation = await get_or_create_conversation(db, request.conversation_id)
+    
+    if not conversation.title:
+        conversation.title = generate_conversation_title(request.query)
+    
+    # Step 2: Save user message
+    await save_message(
+        db=db,
+        conversation_id=conversation.id,
+        role="user",
+        content=request.query,
     )
-    active_prompt = result.scalar_one_or_none()
     
-    system_prompt = ""
-    if active_prompt:
-        system_prompt = active_prompt.prompt_text
+    # Step 3: Extract username via regex (instant, no LLM)
+    username = extract_username(request.query)
     
-    # Generate response using the chat engine
-    # If a user is selected from dropdown, pass their platform-specific identifiers
-    engine_response = await generate_response(
+    # If a user was selected from dropdown, use that instead
+    if request.selected_user:
+        username = (
+            request.selected_user.jira_display_name or
+            request.selected_user.github_username or
+            request.selected_user.display_name
+        )
+    
+    # Step 4: AI Call 1 - Router decides and fetches data via tools
+    router_result = await router_agent(
         query=request.query,
-        mode=request.mode,
+        username=username,
         ai_provider=request.ai_provider,
-        system_prompt=system_prompt,
-        selected_user=request.selected_user,
     )
     
-    return ChatResponse(
-        response=engine_response.response,
-        mode=engine_response.mode,
-        ai_provider=engine_response.ai_provider,
-        sources_consulted=engine_response.sources_consulted,
+    # Step 5: AI Call 2 - Response agent formats the output
+    response_text = await response_agent(
+        query=request.query,
+        data=router_result,
+        ai_provider=request.ai_provider,
     )
-
-
-# =============================================================================
-# GET /chat/modes - List available modes (for frontend)
-# =============================================================================
-
-@router.get("/modes")
-async def get_available_modes():
-    """
-    Get list of available chat modes.
     
-    Useful for frontend to dynamically show mode options.
-    """
-    return {
-        "modes": [
-            {
-                "id": "procedural",
-                "name": "Standard",
-                "description": "Always fetches data from JIRA and GitHub. Reliable but slower.",
-            },
-            {
-                "id": "agent",
-                "name": "Smart Agent",
-                "description": "AI decides when to fetch data. Efficient but less predictable.",
-            },
-        ],
-        "default": "procedural",
+    # Step 6: Save assistant response
+    response_metadata = {
+        "route": router_result.route,
+        "username": username,
+        "sources": [],
     }
+    if router_result.jira_data:
+        response_metadata["sources"].append("jira")
+    if router_result.github_data:
+        response_metadata["sources"].append("github")
+    
+    await save_message(
+        db=db,
+        conversation_id=conversation.id,
+        role="assistant",
+        content=response_text,
+        metadata=response_metadata,
+    )
+    
+    # Step 7: Return response
+    return ChatResponse(
+        response=response_text,
+        conversation_id=conversation.id,
+        ai_provider=request.ai_provider,
+        intent=router_result.route,
+        entities={"username": username},
+        sources_consulted=response_metadata["sources"],
+    )
 
 
 # =============================================================================
@@ -101,11 +178,7 @@ async def get_available_modes():
 
 @router.get("/providers")
 async def get_available_providers():
-    """
-    Get list of available AI providers.
-    
-    Also indicates which providers are configured (have API keys).
-    """
+    """Get list of available AI providers."""
     from app.config import get_settings
     settings = get_settings()
     
@@ -129,31 +202,25 @@ async def get_available_providers():
 
 
 # =============================================================================
-# GET /chat/team - List available team members (real + mock)
+# GET /chat/team - List available team members
 # =============================================================================
 
 @router.get("/team")
 async def get_team_members():
     """
     Get list of team members from JIRA, GitHub, and mock data.
-    
-    Returns a unified list of users that can be selected in the frontend dropdown.
-    Each user has platform-specific identifiers for accurate API queries.
     """
     from app.services import get_jira_client, get_github_client
     
     members = []
-    seen_ids = set()  # Avoid duplicates
+    seen_ids = set()
     
-    # ==========================================================================
     # Fetch real users from JIRA
-    # ==========================================================================
     jira_client = get_jira_client()
     if not jira_client._use_mock:
         try:
             jira_users = await jira_client.get_all_users()
             for user in jira_users:
-                # Only include active human users (skip bots/apps)
                 if user.get("active") and user.get("email"):
                     user_id = f"jira_{user.get('account_id', '')}"
                     if user_id not in seen_ids:
@@ -164,17 +231,14 @@ async def get_team_members():
                             "email": user.get("email"),
                             "source": "jira",
                             "is_real": True,
-                            # Platform-specific identifiers for API queries
                             "jira_account_id": user.get("account_id"),
                             "jira_display_name": user.get("display_name"),
-                            "github_username": None,  # Will be filled if matched
+                            "github_username": None,
                         })
         except Exception as e:
             print(f"Error fetching JIRA users: {e}")
     
-    # ==========================================================================
-    # Fetch real users from GitHub (authenticated user's info)
-    # ==========================================================================
+    # Fetch real users from GitHub
     github_client = get_github_client()
     if not github_client._use_mock:
         try:
@@ -184,10 +248,8 @@ async def get_team_members():
             
             if github_status.get("authenticated") and github_user:
                 user_id = f"github_{github_user}"
-                # Try to match with existing JIRA user by name
                 matched = False
                 for member in members:
-                    # Check if JIRA display name is contained in GitHub name or vice versa
                     jira_name = member["display_name"].lower()
                     gh_name = (github_name or "").lower()
                     if gh_name and (jira_name in gh_name or gh_name in jira_name or any(
@@ -212,9 +274,7 @@ async def get_team_members():
         except Exception as e:
             print(f"Error fetching GitHub user: {e}")
     
-    # ==========================================================================
     # Add mock users for demonstration
-    # ==========================================================================
     mock_users = [
         {"username": "john", "display_name": "John", "role": "Backend Developer"},
         {"username": "sarah", "display_name": "Sarah", "role": "Frontend Developer"},
@@ -234,12 +294,129 @@ async def get_team_members():
                 "is_real": False,
                 "role": mock.get("role"),
                 "jira_account_id": None,
-                "jira_display_name": mock["display_name"],  # Mock data uses display name
-                "github_username": mock["username"],  # Mock data uses username
+                "jira_display_name": mock["display_name"],
+                "github_username": mock["username"],
             })
     
     return {
         "members": members,
         "total_real": len([m for m in members if m.get("is_real")]),
         "total_mock": len([m for m in members if not m.get("is_real")]),
+    }
+
+
+# =============================================================================
+# Conversation Management Endpoints
+# =============================================================================
+
+@router.get("/conversations", response_model=ConversationListResponse)
+async def list_conversations(
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """List all conversations, ordered by most recent."""
+    message_count_subquery = (
+        select(
+            ConversationMessage.conversation_id,
+            func.count(ConversationMessage.id).label("message_count")
+        )
+        .group_by(ConversationMessage.conversation_id)
+        .subquery()
+    )
+    
+    result = await db.execute(
+        select(
+            Conversation,
+            func.coalesce(message_count_subquery.c.message_count, 0).label("message_count")
+        )
+        .outerjoin(message_count_subquery, Conversation.id == message_count_subquery.c.conversation_id)
+        .order_by(Conversation.updated_at.desc())
+        .limit(limit)
+    )
+    rows = result.all()
+    
+    return ConversationListResponse(
+        conversations=[
+            ConversationResponse(
+                id=conv.id,
+                title=conv.title,
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+                message_count=msg_count,
+            )
+            for conv, msg_count in rows
+        ],
+        total=len(rows),
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationWithMessagesResponse)
+async def get_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific conversation with all its messages."""
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(selectinload(Conversation.messages))
+    )
+    conversation = result.scalar_one_or_none()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return ConversationWithMessagesResponse(
+        id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=[
+            MessageResponse(
+                id=msg.id,
+                role=msg.role,
+                content=msg.content,
+                created_at=msg.created_at,
+                metadata=json.loads(msg.metadata_json) if msg.metadata_json else None,
+            )
+            for msg in conversation.messages
+        ],
+    )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a conversation and all its messages."""
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(selectinload(Conversation.messages))
+    )
+    conversation = result.scalar_one_or_none()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    await db.delete(conversation)
+    
+    return {"status": "deleted", "conversation_id": conversation_id}
+
+
+@router.post("/conversations/new")
+async def create_new_conversation(
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new empty conversation."""
+    conversation = Conversation(
+        id=str(uuid.uuid4()),
+    )
+    db.add(conversation)
+    await db.flush()
+    
+    return {
+        "conversation_id": conversation.id,
+        "status": "created",
     }

@@ -294,6 +294,10 @@ class JiraClient:
         """
         username_lower = username.lower().strip()
         
+        # Always use mock data for mock users (john, sarah, mike, lisa)
+        if username_lower in MOCK_JIRA_DATA:
+            return await self._get_mock_issues(username_lower)
+        
         if self._use_mock:
             return await self._get_mock_issues(username_lower)
         else:
