@@ -6,67 +6,21 @@ An AI-powered chatbot that integrates with JIRA and GitHub APIs to answer questi
 
 - **2-AI-Call Pipeline**: Efficient architecture with Router Agent (tool calling) + Response Agent (formatting)
 - **Multi-Provider AI**: Supports OpenAI GPT and Anthropic Claude
+- **Smart Routing**: AI decides which data sources to query (JIRA, GitHub, both, or none)
 - **Real API Integration**: Connects to JIRA Cloud and GitHub
 - **Conversation History**: SQLite-backed chat history with follow-up support
 - **Mock Data Fallback**: Demo users available for testing without API keys
+- **Markdown Responses**: Rich formatting with tables, bullet points, and structured analysis
 
-## Architecture: Simplified Micro-Agent Pattern
+## Architecture
 
-This project implements a **2-agent pipeline** as a practical demonstration of the micro-agent pattern.
-
-### Current Implementation (2 Agents)
-
-```
-┌─────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ User Query  │───▶│  Router Agent   │───▶│ Response Agent  │
-└─────────────┘    │ (with tools)    │    │ (formatting)    │
-                   └─────────────────┘    └─────────────────┘
-                          │
-                   ┌──────┴──────┐
-                   ▼             ▼
-              jira_agent    github_agent
-              (tool)        (tool)
-```
-
-**Flow:**
-1. **Username Extraction** (regex, instant): Extract team member name from query
-2. **AI Call 1 - Router Agent**: Decides which tools to call (JIRA, GitHub, both, or none)
-3. **AI Call 2 - Response Agent**: Formats the fetched data into clean markdown
-
-### Ideal Micro-Agent Architecture (4+ Agents)
-
-```
-┌─────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────┐
-│ Intent  │──▶│ Orchestrator │──▶│ JIRA Agent   │──▶│ Response │
-│ Agent   │   │    Agent     │   │ GitHub Agent │   │  Agent   │
-└─────────┘   └──────────────┘   └──────────────┘   └──────────┘
-```
-
-In a full micro-agent architecture, each agent has a single responsibility:
-- **Intent Agent**: Parse user intent and extract entities
-- **Orchestrator Agent**: Decide which data sources to query
-- **JIRA Agent**: Specialized for JIRA API interactions
-- **GitHub Agent**: Specialized for GitHub API interactions
-- **Response Agent**: Format and present the final response
-
-### Trade-offs
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Full micro-agents** | Better separation of concerns, lower cost per call, highly specialized | More development time, complex orchestration |
-| **Simplified (current)** | Faster to build, easier to debug, demonstrates core concepts | Larger prompts, less specialized |
-
-### Why This Approach?
-
-1. **Demonstrates core concepts**: Tool calling, agent orchestration, data aggregation
-2. **Practical for scope**: Balances sophistication with implementation time
-3. **Extensible**: Can be expanded to full micro-agent pattern by splitting Router Agent into Intent + Orchestrator
+![Team Activity Monitor Architecture](./Team%20Activity%20Monitor%20Architecture-Page-2.jpg)
 
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React 19, Vite, Tailwind CSS |
+| **Frontend** | React 19, Vite, Tailwind CSS, React Markdown |
 | **Backend** | Python 3.13+, FastAPI, SQLAlchemy, SQLite |
 | **AI Providers** | OpenAI GPT, Anthropic Claude |
 | **External APIs** | JIRA Cloud, GitHub |
@@ -103,6 +57,15 @@ npm run dev
 | Backend API | http://localhost:8000 |
 | API Documentation | http://localhost:8000/docs |
 
+## Example Queries
+
+| Query | Route | Description |
+|-------|-------|-------------|
+| "Hello" | None | Greeting - no data fetched |
+| "What is John working on?" | Both | Fetches JIRA + GitHub |
+| "Show me Sarah's JIRA tickets" | JIRA only | Fetches JIRA data |
+| "What has Mike committed recently?" | GitHub only | Fetches GitHub data |
+
 ## Project Structure
 
 ```
@@ -124,7 +87,7 @@ frontend/
 ├── src/
 │   ├── App.jsx
 │   ├── components/
-│   │   ├── ChatInterface.jsx  # Main chat UI
+│   │   ├── ChatInterface.jsx  # Main chat UI with history
 │   │   └── MessageBubble.jsx  # Message rendering with markdown
 │   └── api/
 │       └── client.js          # API client
@@ -133,4 +96,7 @@ frontend/
 
 ## Documentation
 
-For detailed technical documentation including API reference, design patterns, and implementation details, see [DOCUMENTATION.md](./DOCUMENTATION.md).
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Architecture decisions, trade-offs, micro-agent pattern |
+| [DOCUMENTATION.md](./DOCUMENTATION.md) | Full technical docs, API reference, design patterns |
