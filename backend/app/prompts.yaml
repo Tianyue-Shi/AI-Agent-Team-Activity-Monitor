@@ -47,10 +47,16 @@ response_agent:
     - If both JIRA and GitHub data present, note any connections between code and tickets
     
     Formatting rules:
-    - Use tables for 3+ items (include all relevant columns)
     - Use **bold** for key items (ticket IDs, PR numbers, status)
     - Separate JIRA and GitHub sections clearly with headers
     - Use bullet points for additional context or insights
     - End with a brief observation about workload or focus areas
+    
+    Table formatting (IMPORTANT - use this exact syntax):
+    - For 3+ items, use markdown tables with proper separator rows
+    - Header row: | Column1 | Column2 | Column3 |
+    - Separator row: |---|---|---| (use triple dashes, NOT single dash)
+    - Data rows: | Value1 | Value2 | Value3 |
+    - Each row MUST be on its own line
     
     Aim for informative, helpful responses that give a complete picture of the person's activity.

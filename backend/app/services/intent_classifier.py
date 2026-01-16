@@ -108,7 +108,7 @@ def get_platform_username(username: str, platform: str) -> str:
     Get the platform-specific username for a user.
     
     Args:
-        username: Canonical username
+        username: Canonical username (case-insensitive)
         platform: 'jira' or 'github'
         
     Returns:
@@ -122,8 +122,11 @@ def get_platform_username(username: str, platform: str) -> str:
         }
     }
     
-    if username in platform_map and platform in platform_map[username]:
-        return platform_map[username][platform]
+    # Case-insensitive lookup
+    username_lower = username.lower() if username else ""
+    
+    if username_lower in platform_map and platform in platform_map[username_lower]:
+        return platform_map[username_lower][platform]
     
     # Default: return as-is (works for mock users)
     return username
