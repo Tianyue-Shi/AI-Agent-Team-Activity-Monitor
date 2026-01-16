@@ -1,9 +1,7 @@
 """
 Prompt Loader - Loads prompts from YAML file at startup and caches in memory.
 
-This module provides prompts for the 2-AI-call architecture:
-- router_agent: Decides which tools to call
-- response_agent: Formats the final response
+This module provides prompts.
 """
 
 from functools import lru_cache

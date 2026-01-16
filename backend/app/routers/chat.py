@@ -1,13 +1,3 @@
-"""
-Chat Router - Main chat endpoint for the Team Activity Monitor.
-
-Implements a streamlined 2-AI-call pipeline:
-1. Router Agent (AI Call 1): Decides and fetches data via tool calling
-2. Response Agent (AI Call 2): Formats the final response
-
-Username extraction is done via regex (no LLM needed).
-"""
-
 import json
 import uuid
 from typing import Optional, List

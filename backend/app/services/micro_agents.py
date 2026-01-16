@@ -1,9 +1,9 @@
 """
-Micro-Agents - AI agents for the Team Activity Monitor.
+Micro-Agents
 
-This module implements a 2-AI-call architecture:
-1. Router Agent (AI Call 1): Decides which tools to call, executes them
-2. Response Agent (AI Call 2): Formats the final response
+This module implements a 2-AI-agent call architecture:
+1. Router Agent: Decides which tools to call, executes them
+2. Response Agent: Formats the final response
 
 Tool functions (called by Router Agent):
 - jira_agent: Fetches JIRA data for a user

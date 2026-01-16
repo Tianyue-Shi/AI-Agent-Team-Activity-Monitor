@@ -1,8 +1,5 @@
 """
 Username Extractor - Extracts usernames from queries using regex.
-
-This module provides fast, regex-based username extraction.
-No LLM calls - the AI router agent handles intent classification.
 """
 
 import re

@@ -1,7 +1,3 @@
-"""
-Prompts Router - Version-controlled system prompts.
-"""
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
