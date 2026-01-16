@@ -1,29 +1,30 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Zap, Shield, Sparkles, Users, ChevronDown } from 'lucide-react';
-import { sendChatMessage, getChatModes, getChatProviders, getTeamMembers } from '../api/client';
+import { Send, Bot, User, Loader2, Sparkles, Users, ChevronDown, Plus, MessageSquare, Trash2 } from 'lucide-react';
+import { sendChatMessage, getChatProviders, getTeamMembers, listConversations, getConversation, createNewConversation, deleteConversation } from '../api/client';
 import MessageBubble from './MessageBubble';
 
 /**
  * Main Chat Interface Component
  * 
  * Features:
- * - Mode toggle (Procedural vs Agent)
  * - AI Provider toggle (OpenAI vs Claude)
- * - Message history
+ * - Message history with conversation support
  * - Team member suggestions
  * - User dropdown for selecting team members (real + mock)
+ * - Conversation history panel
  */
 export default function ChatInterface() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [mode, setMode] = useState('procedural');
   const [aiProvider, setAiProvider] = useState('openai');
-  const [modes, setModes] = useState([]);
   const [providers, setProviders] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(null); // Selected user from dropdown
+  const [selectedUser, setSelectedUser] = useState(null);
   const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
   const messagesEndRef = useRef(null);
   const dropdownRef = useRef(null);
 
@@ -31,14 +32,14 @@ export default function ChatInterface() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [modesData, providersData, teamData] = await Promise.all([
-          getChatModes(),
+        const [providersData, teamData, conversationsData] = await Promise.all([
           getChatProviders(),
           getTeamMembers(),
+          listConversations(10),
         ]);
-        setModes(modesData.modes);
         setProviders(providersData.providers);
         setTeamMembers(teamData.members);
+        setConversations(conversationsData.conversations);
       } catch (error) {
         console.error('Failed to load initial data:', error);
       }
@@ -62,6 +63,50 @@ export default function ChatInterface() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const handleNewConversation = async () => {
+    setMessages([]);
+    setConversationId(null);
+    setShowHistory(false);
+  };
+
+  const handleLoadConversation = async (convId) => {
+    try {
+      // Fetch the conversation with all its messages
+      const conversation = await getConversation(convId);
+      
+      // Convert API messages to UI format
+      const uiMessages = conversation.messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+        metadata: msg.metadata || null,
+      }));
+      
+      setMessages(uiMessages);
+      setConversationId(convId);
+      setShowHistory(false);
+    } catch (error) {
+      console.error('Failed to load conversation:', error);
+      // Fallback: just set the ID and clear messages
+      setConversationId(convId);
+      setMessages([]);
+      setShowHistory(false);
+    }
+  };
+
+  const handleDeleteConversation = async (convId, e) => {
+    e.stopPropagation();
+    try {
+      await deleteConversation(convId);
+      setConversations(prev => prev.filter(c => c.id !== convId));
+      if (conversationId === convId) {
+        setMessages([]);
+        setConversationId(null);
+      }
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -78,20 +123,39 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      // Pass selected user to API if one is selected
-      const response = await sendChatMessage(userMessage, mode, aiProvider, selectedUser);
+      // Send message with conversation ID for history
+      const response = await sendChatMessage(
+        userMessage, 
+        aiProvider, 
+        selectedUser, 
+        conversationId
+      );
+      
+      // Update conversation ID from response
+      if (response.conversation_id) {
+        setConversationId(response.conversation_id);
+      }
       
       // Add assistant message
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: response.response,
         metadata: {
-          mode: response.mode,
           aiProvider: response.ai_provider,
           sources: response.sources_consulted,
+          intent: response.intent,
+          entities: response.entities,
           selectedUser: selectedUser ? selectedUser.display_name : null,
         },
       }]);
+
+      // Refresh conversations list
+      try {
+        const conversationsData = await listConversations(10);
+        setConversations(conversationsData.conversations);
+      } catch (err) {
+        console.error('Failed to refresh conversations:', err);
+      }
     } catch (error) {
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -112,31 +176,32 @@ export default function ChatInterface() {
       {/* Header with controls */}
       <div className="glass rounded-xl p-4 mb-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          {/* Mode Selection */}
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-400 font-medium">Mode:</span>
-            <div className="flex bg-surface-800 rounded-lg p-1">
-              {modes.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                    mode === m.id
-                      ? 'bg-primary-600 text-white'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                  title={m.description}
-                >
-                  {m.id === 'procedural' ? (
-                    <Shield className="w-4 h-4" />
-                  ) : (
-                    <Zap className="w-4 h-4" />
-                  )}
-                  {m.name}
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* New Conversation Button */}
+          <button
+            onClick={handleNewConversation}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-primary-600 text-white hover:bg-primary-500 transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            New Chat
+          </button>
+
+          {/* History Toggle */}
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              showHistory 
+                ? 'bg-primary-600 text-white' 
+                : 'bg-surface-800 text-gray-400 hover:text-white'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            History
+            {conversations.length > 0 && (
+              <span className="bg-surface-600 px-1.5 py-0.5 rounded-full text-xs">
+                {conversations.length}
+              </span>
+            )}
+          </button>
 
           {/* Provider Selection */}
           <div className="flex items-center gap-3">
@@ -155,64 +220,103 @@ export default function ChatInterface() {
                 >
                   <Sparkles className="w-4 h-4" />
                   {p.name}
-                  {!p.configured && <span className="text-xs">(⚠)</span>}
+                  {!p.configured && <span className="text-xs">(N/A)</span>}
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Mode explanation */}
+        {/* Info text */}
         <div className="mt-3 text-xs text-gray-500">
-          {mode === 'procedural' ? (
-            <span>📊 <strong>Standard Mode:</strong> Always fetches JIRA & GitHub data. Reliable but uses more resources.</span>
-          ) : (
-            <span>🤖 <strong>Agent Mode:</strong> AI decides when to fetch data. Efficient but less predictable.</span>
-          )}
+          <span>Smart routing automatically fetches from JIRA and/or GitHub based on your question.</span>
         </div>
       </div>
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <Bot className="w-16 h-16 text-primary-500 mb-4" />
-            <h2 className="text-xl font-semibold text-gray-200 mb-2">
-              Team Activity Monitor
-            </h2>
-            <p className="text-gray-400 mb-6 max-w-md">
-              Ask me about what your team members are working on. I'll check JIRA tickets and GitHub activity.
-            </p>
-            
-            {/* Quick query buttons */}
-            <div className="flex flex-wrap justify-center gap-2">
-              {teamMembers.map((member) => (
-                <button
-                  key={member.username}
-                  onClick={() => handleQuickQuery(member)}
-                  className="btn-secondary text-sm flex items-center gap-2"
-                >
-                  <User className="w-4 h-4" />
-                  {member.display_name}
-                  <span className="text-gray-500">({member.role})</span>
-                </button>
-              ))}
+      {/* Main content area */}
+      <div className="flex flex-1 gap-4 overflow-hidden">
+        {/* Conversation History Sidebar */}
+        {showHistory && (
+          <div className="w-64 bg-surface-800 rounded-xl p-3 overflow-y-auto flex-shrink-0">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">Recent Conversations</h3>
+            {conversations.length === 0 ? (
+              <p className="text-xs text-gray-500">No conversations yet</p>
+            ) : (
+              <div className="space-y-2">
+                {conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    onClick={() => handleLoadConversation(conv.id)}
+                    className={`p-2 rounded-lg cursor-pointer transition-all group ${
+                      conversationId === conv.id 
+                        ? 'bg-primary-600/20 border border-primary-500' 
+                        : 'hover:bg-surface-700'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm text-gray-300 truncate flex-1">
+                        {conv.title || 'Untitled'}
+                      </p>
+                      <button
+                        onClick={(e) => handleDeleteConversation(conv.id, e)}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all"
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-400" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {conv.message_count} messages
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Messages area */}
+        <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+          {messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <Bot className="w-16 h-16 text-primary-500 mb-4" />
+              <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                Team Activity Monitor
+              </h2>
+              <p className="text-gray-400 mb-6 max-w-md">
+                Ask me about what your team members are working on. I'll intelligently check JIRA tickets and GitHub activity as needed.
+              </p>
+              
+              {/* Quick query buttons */}
+              <div className="flex flex-wrap justify-center gap-2">
+                {teamMembers.slice(0, 4).map((member) => (
+                  <button
+                    key={member.id}
+                    onClick={() => handleQuickQuery(member)}
+                    className="btn-secondary text-sm flex items-center gap-2"
+                  >
+                    <User className="w-4 h-4" />
+                    {member.display_name}
+                    {member.role && <span className="text-gray-500">({member.role})</span>}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        ) : (
-          messages.map((message, index) => (
-            <MessageBubble key={index} message={message} />
-          ))
-        )}
-        
-        {isLoading && (
-          <div className="flex items-center gap-3 p-4 rounded-lg bg-surface-900">
-            <Loader2 className="w-5 h-5 text-primary-500 animate-spin" />
-            <span className="text-gray-400">Thinking...</span>
-          </div>
-        )}
-        
-        <div ref={messagesEndRef} />
+          ) : (
+            messages.map((message, index) => (
+              <MessageBubble key={index} message={message} />
+            ))
+          )}
+          
+          {isLoading && (
+            <div className="flex items-center gap-3 p-4 rounded-lg bg-surface-900">
+              <Loader2 className="w-5 h-5 text-primary-500 animate-spin" />
+              <span className="text-gray-400">Thinking...</span>
+            </div>
+          )}
+          
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Input area with user dropdown */}
@@ -259,7 +363,7 @@ export default function ChatInterface() {
                 {teamMembers.filter(m => m.is_real).length > 0 && (
                   <>
                     <div className="px-4 py-1 text-xs text-gray-500 bg-surface-900 font-medium">
-                      🔗 Connected Accounts
+                      Connected Accounts
                     </div>
                     {teamMembers.filter(m => m.is_real).map((member) => (
                       <button
@@ -289,7 +393,7 @@ export default function ChatInterface() {
                 {teamMembers.filter(m => !m.is_real).length > 0 && (
                   <>
                     <div className="px-4 py-1 text-xs text-gray-500 bg-surface-900 font-medium">
-                      🧪 Demo Users
+                      Demo Users
                     </div>
                     {teamMembers.filter(m => !m.is_real).map((member) => (
                       <button
@@ -354,6 +458,13 @@ export default function ChatInterface() {
                 GitHub: {selectedUser.github_username}
               </span>
             )}
+          </div>
+        )}
+
+        {/* Conversation indicator */}
+        {conversationId && (
+          <div className="mt-2 text-xs text-gray-500">
+            Conversation active - follow-up questions will have context
           </div>
         )}
       </form>
