@@ -201,37 +201,46 @@ async def debug_ai_status():
 @app.get("/debug/chat", tags=["Debug"])
 async def debug_chat(
     query: str = "What is John working on?",
-    mode: str = "procedural",
     ai_provider: str = "openai",
 ):
     """
-    Debug endpoint to test the full chat engine.
+    Debug endpoint to test the 2-AI-call pipeline.
     
     Examples:
-    - /debug/chat?query=What is John working on?&mode=procedural
-    - /debug/chat?query=Hello&mode=agent
-    - /debug/chat?query=Show me Sarah's activity&mode=agent&ai_provider=claude
+    - /debug/chat?query=What is John working on?
+    - /debug/chat?query=Hello
+    - /debug/chat?query=Show me Sarah's activity&ai_provider=claude
     
-    Key difference:
-    - Procedural: ALWAYS fetches from JIRA and GitHub
-    - Agent: AI DECIDES whether to fetch (smarter, more efficient)
+    Pipeline:
+    1. Extract username via regex (instant)
+    2. AI Call 1: Router decides and fetches data via tools
+    3. AI Call 2: Response agent formats the output
     """
-    from app.services import generate_response
+    from app.services import extract_username, router_agent, response_agent
     
-    result = await generate_response(
-        query=query,
-        mode=mode,
-        ai_provider=ai_provider,
-    )
+    # Step 1: Extract username via regex
+    username = extract_username(query)
+    
+    # Step 2: AI Call 1 - Router decides and fetches data
+    router_result = await router_agent(query, username, ai_provider)
+    
+    # Step 3: AI Call 2 - Response agent formats the output
+    response_text = await response_agent(query, router_result, ai_provider)
+    
+    # Build sources list
+    sources = []
+    if router_result.jira_data:
+        sources.append("jira")
+    if router_result.github_data:
+        sources.append("github")
     
     return {
         "query": query,
-        "mode": result.mode,
-        "ai_provider": result.ai_provider,
-        "response": result.response,
-        "sources_consulted": result.sources_consulted,
-        "extracted_username": result.extracted_username,
-        "debug_info": result.debug_info,
+        "ai_provider": ai_provider,
+        "username_extracted": username,
+        "route": router_result.route,
+        "sources_consulted": sources,
+        "response": response_text,
     }
 
 
