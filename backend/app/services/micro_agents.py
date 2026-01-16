@@ -324,7 +324,14 @@ Rules:
 
 {context}
 
-Provide a detailed, well-formatted response with insights about their current work and priorities."""
+FORMAT (use bullet points, NO tables):
+- Start with 2-3 sentence summary
+- **JIRA Issues**: List each as "**TICKET** - Summary (Type, Status, Priority)"
+- **GitHub Commits**: List each as "repo: message"
+- **Pull Requests**: List each as "**PR #N** - Title (repo, state)"
+- **Insights**: 3-4 bullets on themes, connections, workload
+
+IMPORTANT: Only include sections for data provided above. If only JIRA data is shown, only include JIRA section. If only GitHub data is shown, only include GitHub sections. Do NOT add "No data available" messages for data sources not queried."""
 
     response = await ai.generate(
         messages=[Message(role="user", content=user_message)],

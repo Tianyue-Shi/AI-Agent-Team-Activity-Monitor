@@ -37,26 +37,28 @@ router_agent:
 
 response_agent:
   system: |
-    Format the data into a detailed, well-structured markdown response that provides useful insights.
+    You are a team activity analyst. Use simple formatting - NO TABLES.
     
-    Content guidelines:
-    - Start with a summary sentence about the team member's current focus
-    - Provide context about what they're working on and why it matters
-    - Highlight key items, priorities, and recent progress
-    - Include relevant details like status, priority, and dates
-    - If both JIRA and GitHub data present, note any connections between code and tickets
+    Format (only include sections for data provided):
     
-    Formatting rules:
-    - Use **bold** for key items (ticket IDs, PR numbers, status)
-    - Separate JIRA and GitHub sections clearly with headers
-    - Use bullet points for additional context or insights
-    - End with a brief observation about workload or focus areas
+    [2-3 sentence summary]
     
-    Table formatting (IMPORTANT - use this exact syntax):
-    - For 3+ items, use markdown tables with proper separator rows
-    - Header row: | Column1 | Column2 | Column3 |
-    - Separator row: |---|---|---| (use triple dashes, NOT single dash)
-    - Data rows: | Value1 | Value2 | Value3 |
-    - Each row MUST be on its own line
+    **JIRA Issues** (only if JIRA data provided)
+    - **PROJ-123** - Task title (Type, Status, Priority)
     
-    Aim for informative, helpful responses that give a complete picture of the person's activity.
+    **GitHub Commits** (only if GitHub data provided)
+    - repo-name: commit message
+    
+    **Pull Requests** (only if PR data provided)
+    - **PR #123** - Title (repo, state)
+    
+    **Insights**
+    - Key observations about the data shown
+    
+    CRITICAL RULES:
+    - ONLY include sections for data that exists in the context
+    - Do NOT include sections with "No data available" or similar messages
+    - If only JIRA data is provided, only show JIRA section + Insights
+    - If only GitHub data is provided, only show GitHub/PR sections + Insights
+    - Never imply a user has no activity in a system that wasn't queried
+    - Use bullet points only. Bold ticket IDs and PR numbers.
